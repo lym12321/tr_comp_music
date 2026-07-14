@@ -4,6 +4,7 @@
 #include "bsp/sys.h"
 #include "FreeRTOS.h"
 #include "music_terminal.h"
+#include "semphr.h"
 #include "task.h"
 
 namespace music {
@@ -11,10 +12,17 @@ namespace music {
         constexpr uint32_t update_signal = 1;
         constexpr uint32_t player_stack_depth = 256;
 
+        struct blocking_waiter_t {
+            StaticSemaphore_t storage;
+            SemaphoreHandle_t semaphore;
+            bool completed = false;
+        };
+
         struct request_t {
             const tone_t *tones = nullptr;
             std::size_t size = 0;
             float duty_cycle = 0.0f;
+            blocking_waiter_t *waiter = nullptr;
         };
 
         StaticTask_t player_task_buffer;
@@ -78,10 +86,48 @@ namespace music {
             return notified;
         }
 
+        void finish_waiter(blocking_waiter_t *waiter, bool completed) {
+            if (waiter == nullptr) return;
+            waiter->completed = completed;
+
+            if (bsp_sys_in_isr()) {
+                BaseType_t task_woken = pdFALSE;
+                xSemaphoreGiveFromISR(waiter->semaphore, &task_woken);
+                portYIELD_FROM_ISR(task_woken);
+            } else {
+                xSemaphoreGive(waiter->semaphore);
+            }
+        }
+
+        bool start_playback(
+            std::span<const tone_t> tones, float duty_cycle, blocking_waiter_t *waiter
+        ) {
+            if (tones.empty() || !(duty_cycle > 0.0f && duty_cycle <= 1.0f)) return false;
+
+            const unsigned long state = bsp_sys_enter_critical();
+            if (player_task == nullptr) {
+                bsp_sys_exit_critical(state);
+                return false;
+            }
+            finish_waiter(request.waiter, false);
+            request = { tones.data(), tones.size(), duty_cycle, waiter };
+            ++revision;
+            active = true;
+            paused = false;
+            const bool notified = notify_player();
+            if (!notified) {
+                request = {};
+                active = false;
+            }
+            bsp_sys_exit_critical(state);
+            return notified;
+        }
+
         void player(void *) {
             request_t current;
             uint32_t current_revision = 0;
             std::size_t tone_index = 0;
+            bool failed = false;
 
             for (;;) {
                 wait_for_update();
@@ -92,9 +138,10 @@ namespace music {
                         current = state.request;
                         current_revision = state.revision;
                         tone_index = 0;
+                        failed = false;
                     }
 
-                    bsp_buzzer_quiet();
+                    if (bsp_buzzer_quiet() != BSP_STATUS_OK) failed = true;
                     if (current.tones == nullptr || state.paused) break;
 
                     bool interrupted = false;
@@ -110,6 +157,7 @@ namespace music {
                             : bsp_buzzer_alarm(tone.frequency_hz, current.duty_cycle);
 
                         if (status != BSP_STATUS_OK) {
+                            failed = true;
                             tone_index = current.size;
                             break;
                         }
@@ -120,12 +168,13 @@ namespace music {
                         ++tone_index;
                     }
 
-                    bsp_buzzer_quiet();
+                    if (bsp_buzzer_quiet() != BSP_STATUS_OK) failed = true;
                     if (interrupted) continue;
 
                     const unsigned long finish_state = bsp_sys_enter_critical();
                     const bool completed = revision == current_revision;
                     if (completed) {
+                        finish_waiter(current.waiter, !failed);
                         request = {};
                         active = false;
                         paused = false;
@@ -156,21 +205,17 @@ namespace music {
     }
 
     bool play(std::span<const tone_t> tones, float duty_cycle) {
-        if (tones.empty() || !(duty_cycle > 0.0f && duty_cycle <= 1.0f)) return false;
+        return start_playback(tones, duty_cycle, nullptr);
+    }
 
-        const unsigned long state = bsp_sys_enter_critical();
-        if (player_task == nullptr) {
-            bsp_sys_exit_critical(state);
-            return false;
-        }
-        request = { tones.data(), tones.size(), duty_cycle };
-        ++revision;
-        active = true;
-        paused = false;
-        const bool notified = notify_player();
-        bsp_sys_exit_critical(state);
+    bool play_blocking(std::span<const tone_t> tones, float duty_cycle) {
+        if (bsp_sys_in_isr()) return false;
 
-        return notified;
+        blocking_waiter_t waiter;
+        waiter.semaphore = xSemaphoreCreateBinaryStatic(&waiter.storage);
+        if (waiter.semaphore == nullptr || !start_playback(tones, duty_cycle, &waiter)) return false;
+        if (xSemaphoreTake(waiter.semaphore, portMAX_DELAY) != pdTRUE) return false;
+        return waiter.completed;
     }
 
     bool pause() {
@@ -187,6 +232,7 @@ namespace music {
             bsp_sys_exit_critical(state);
             return;
         }
+        finish_waiter(request.waiter, false);
         request = {};
         ++revision;
         active = false;
