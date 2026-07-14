@@ -10,18 +10,18 @@ namespace music {
         uint16_t duration_ms;
     };
 
-    [[nodiscard]] bool init();
+    bool init();
 
     // Both playback APIs require tones with static storage duration.
-    [[nodiscard]] bool play(std::span<const tone_t> tones, float duty_cycle = 0.2f);
+    bool play(std::span<const tone_t> tones, float duty_cycle = 0.2f);
 
-    [[nodiscard]] bool play_blocking(std::span<const tone_t> tones, float duty_cycle = 0.2f);
+    bool play_blocking(std::span<const tone_t> tones, float duty_cycle = 0.2f);
 
-    [[nodiscard]] bool pause();
+    bool pause();
 
-    [[nodiscard]] bool resume();
+    bool resume();
 
     void stop();
 
-    [[nodiscard]] bool busy();
+    bool busy();
 }
