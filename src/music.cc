@@ -3,6 +3,7 @@
 #include "bsp/buzzer.h"
 #include "bsp/sys.h"
 #include "FreeRTOS.h"
+#include "music_terminal.h"
 #include "task.h"
 
 namespace music {
@@ -22,6 +23,13 @@ namespace music {
         request_t request;
         uint32_t revision = 0;
         bool active = false;
+        bool paused = false;
+
+        struct playback_state_t {
+            request_t request;
+            uint32_t revision;
+            bool paused;
+        };
 
         bool notify_player() {
             if (bsp_sys_in_isr()) {
@@ -41,52 +49,75 @@ namespace music {
                 && (value & update_signal) != 0;
         }
 
-        request_t latest_request(uint32_t &current_revision) {
-            request_t current;
+        playback_state_t latest_state() {
+            playback_state_t current;
 
             for (;;) {
                 const unsigned long state = bsp_sys_enter_critical();
-                current = request;
-                current_revision = revision;
+                current = { request, revision, paused };
                 bsp_sys_exit_critical(state);
 
                 wait_for_update(0);
 
                 const unsigned long check_state = bsp_sys_enter_critical();
-                const bool unchanged = revision == current_revision;
+                const bool unchanged = revision == current.revision && paused == current.paused;
                 bsp_sys_exit_critical(check_state);
                 if (unchanged) return current;
             }
         }
 
+        bool set_paused(bool value) {
+            const unsigned long state = bsp_sys_enter_critical();
+            if (player_task == nullptr || !active || paused == value) {
+                bsp_sys_exit_critical(state);
+                return false;
+            }
+            paused = value;
+            const bool notified = notify_player();
+            bsp_sys_exit_critical(state);
+            return notified;
+        }
+
         void player(void *) {
+            request_t current;
+            uint32_t current_revision = 0;
+            std::size_t tone_index = 0;
+
             for (;;) {
                 wait_for_update();
 
                 for (;;) {
-                    uint32_t current_revision;
-                    const request_t current = latest_request(current_revision);
+                    const playback_state_t state = latest_state();
+                    if (state.revision != current_revision) {
+                        current = state.request;
+                        current_revision = state.revision;
+                        tone_index = 0;
+                    }
 
                     bsp_buzzer_quiet();
-                    if (current.tones == nullptr) break;
+                    if (current.tones == nullptr || state.paused) break;
 
                     bool interrupted = false;
-                    for (std::size_t i = 0; i < current.size; ++i) {
+                    while (tone_index < current.size) {
                         if (wait_for_update(0)) {
                             interrupted = true;
                             break;
                         }
 
-                        const tone_t &tone = current.tones[i];
+                        const tone_t &tone = current.tones[tone_index];
                         const bsp_status_t status = tone.frequency_hz == 0
                             ? bsp_buzzer_quiet()
                             : bsp_buzzer_alarm(tone.frequency_hz, current.duty_cycle);
 
-                        if (status != BSP_STATUS_OK) break;
+                        if (status != BSP_STATUS_OK) {
+                            tone_index = current.size;
+                            break;
+                        }
                         if (wait_for_update(pdMS_TO_TICKS(tone.duration_ms))) {
                             interrupted = true;
                             break;
                         }
+                        ++tone_index;
                     }
 
                     bsp_buzzer_quiet();
@@ -97,6 +128,7 @@ namespace music {
                     if (completed) {
                         request = {};
                         active = false;
+                        paused = false;
                     }
                     bsp_sys_exit_critical(finish_state);
                     if (completed) break;
@@ -106,6 +138,7 @@ namespace music {
     }
 
     bool init() {
+        bool created = false;
         const unsigned long state = bsp_sys_enter_critical();
         if (player_task == nullptr) {
             if (bsp_buzzer_quiet() == BSP_STATUS_OK) {
@@ -113,10 +146,12 @@ namespace music {
                     player, "music", player_stack_depth, nullptr, tskIDLE_PRIORITY + 1,
                     player_stack, &player_task_buffer
                 );
+                created = player_task != nullptr;
             }
         }
         const bool result = player_task != nullptr;
         bsp_sys_exit_critical(state);
+        if (created) internal::register_terminal_command();
         return result;
     }
 
@@ -131,10 +166,19 @@ namespace music {
         request = { tones.data(), tones.size(), duty_cycle };
         ++revision;
         active = true;
+        paused = false;
         const bool notified = notify_player();
         bsp_sys_exit_critical(state);
 
         return notified;
+    }
+
+    bool pause() {
+        return set_paused(true);
+    }
+
+    bool resume() {
+        return set_paused(false);
     }
 
     void stop() {
@@ -146,6 +190,7 @@ namespace music {
         request = {};
         ++revision;
         active = false;
+        paused = false;
         notify_player();
         bsp_sys_exit_critical(state);
     }

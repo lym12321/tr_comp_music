@@ -15,6 +15,10 @@ namespace music {
     // tones must have static storage duration.
     [[nodiscard]] bool play(std::span<const tone_t> tones, float duty_cycle = 0.2f);
 
+    [[nodiscard]] bool pause();
+
+    [[nodiscard]] bool resume();
+
     void stop();
 
     [[nodiscard]] bool busy();
