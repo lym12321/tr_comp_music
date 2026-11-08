@@ -39,16 +39,16 @@ namespace music {
             bool paused;
         };
 
-        bool notify_player() {
+        void notify_player() {
             if (bsp_sys_in_isr()) {
                 BaseType_t task_woken = pdFALSE;
-                const BaseType_t result = xTaskNotifyFromISR(
+                (void) xTaskNotifyFromISR(
                     player_task, update_signal, eSetBits, &task_woken
                 );
                 portYIELD_FROM_ISR(task_woken);
-                return result == pdPASS;
+            } else {
+                (void) xTaskNotify(player_task, update_signal, eSetBits);
             }
-            return xTaskNotify(player_task, update_signal, eSetBits) == pdPASS;
         }
 
         bool wait_for_update(TickType_t timeout = portMAX_DELAY) {
@@ -58,20 +58,11 @@ namespace music {
         }
 
         playback_state_t latest_state() {
-            playback_state_t current;
-
-            for (;;) {
-                const unsigned long state = bsp_sys_enter_critical();
-                current = { request, revision, paused };
-                bsp_sys_exit_critical(state);
-
-                wait_for_update(0);
-
-                const unsigned long check_state = bsp_sys_enter_critical();
-                const bool unchanged = revision == current.revision && paused == current.paused;
-                bsp_sys_exit_critical(check_state);
-                if (unchanged) return current;
-            }
+            const unsigned long state = bsp_sys_enter_critical();
+            (void) wait_for_update(0);
+            const playback_state_t current { request, revision, paused };
+            bsp_sys_exit_critical(state);
+            return current;
         }
 
         bool set_paused(bool value) {
@@ -81,9 +72,9 @@ namespace music {
                 return false;
             }
             paused = value;
-            const bool notified = notify_player();
+            notify_player();
             bsp_sys_exit_critical(state);
-            return notified;
+            return true;
         }
 
         void finish_waiter(blocking_waiter_t *waiter, bool completed) {
@@ -114,13 +105,9 @@ namespace music {
             ++revision;
             active = true;
             paused = false;
-            const bool notified = notify_player();
-            if (!notified) {
-                request = {};
-                active = false;
-            }
+            notify_player();
             bsp_sys_exit_critical(state);
-            return notified;
+            return true;
         }
 
         void player(void *) {
