@@ -19,7 +19,7 @@ music::play(startup);
 暂停会立即静音，恢复时从被中断的音符重新播放。
 `play_blocking()` 会等待曲目自然结束；被替换或停止时返回 `false`，不能从 ISR 调用。
 
-启用 terminal 后可使用以下命令测试：
+调试时，在 `terminal::init(port)` 后调用一次 `music::register_terminal_commands()`，即可从终端测试播放。
 
 ```text
 music play test

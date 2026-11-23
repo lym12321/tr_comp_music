@@ -1,5 +1,3 @@
-#include "music_terminal.h"
-
 #include "music/music.h"
 #include "utils/terminal.h"
 
@@ -16,7 +14,7 @@ namespace {
     };
 }
 
-void music::internal::register_terminal_command() {
+void music::register_terminal_commands() {
     terminal::register_cmd("music", [](const std::vector<std::string> &args) {
         if (args.size() == 3 && args[1] == "play" && args[2] == "test") {
             terminal::info(music::play(test_track) ? "Playing test track.\r\n" : "Play failed.\r\n");

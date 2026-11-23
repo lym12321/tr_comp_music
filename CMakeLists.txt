@@ -8,7 +8,6 @@ file(GLOB_RECURSE SOURCES
 add_library(music STATIC ${SOURCES})
 target_include_directories(music
         PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal
 )
 
 target_link_libraries(music PRIVATE bsp components::utils)

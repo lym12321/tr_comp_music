@@ -3,7 +3,6 @@
 #include "bsp/buzzer.h"
 #include "bsp/sys.h"
 #include "FreeRTOS.h"
-#include "music_terminal.h"
 #include "semphr.h"
 #include "task.h"
 
@@ -114,7 +113,6 @@ namespace music {
             request_t current;
             uint32_t current_revision = 0;
             std::size_t tone_index = 0;
-            bool failed = false;
 
             for (;;) {
                 wait_for_update();
@@ -125,10 +123,9 @@ namespace music {
                         current = state.request;
                         current_revision = state.revision;
                         tone_index = 0;
-                        failed = false;
                     }
 
-                    if (bsp_buzzer_quiet() != BSP_STATUS_OK) failed = true;
+                    bsp_buzzer_quiet();
                     if (current.tones == nullptr || state.paused) break;
 
                     bool interrupted = false;
@@ -139,13 +136,9 @@ namespace music {
                         }
 
                         const tone_t &tone = current.tones[tone_index];
-                        const bsp_status_t status = tone.frequency_hz == 0
-                            ? bsp_buzzer_quiet()
-                            : bsp_buzzer_alarm(tone.frequency_hz, current.duty_cycle);
-
-                        if (status != BSP_STATUS_OK) {
-                            failed = true;
-                            tone_index = current.size;
+                        if (tone.frequency_hz == 0) {
+                            bsp_buzzer_quiet();
+                        } else if (bsp_buzzer_alarm(tone.frequency_hz, current.duty_cycle) != BSP_STATUS_OK) {
                             break;
                         }
                         if (wait_for_update(pdMS_TO_TICKS(tone.duration_ms))) {
@@ -155,13 +148,13 @@ namespace music {
                         ++tone_index;
                     }
 
-                    if (bsp_buzzer_quiet() != BSP_STATUS_OK) failed = true;
+                    bsp_buzzer_quiet();
                     if (interrupted) continue;
 
                     const unsigned long finish_state = bsp_sys_enter_critical();
                     const bool completed = revision == current_revision;
                     if (completed) {
-                        finish_waiter(current.waiter, !failed);
+                        finish_waiter(current.waiter, tone_index == current.size);
                         request = {};
                         active = false;
                         paused = false;
@@ -174,20 +167,16 @@ namespace music {
     }
 
     bool init() {
-        bool created = false;
         const unsigned long state = bsp_sys_enter_critical();
         if (player_task == nullptr) {
-            if (bsp_buzzer_quiet() == BSP_STATUS_OK) {
-                player_task = xTaskCreateStatic(
-                    player, "music", player_stack_depth, nullptr, tskIDLE_PRIORITY + 1,
-                    player_stack, &player_task_buffer
-                );
-                created = player_task != nullptr;
-            }
+            bsp_buzzer_quiet();
+            player_task = xTaskCreateStatic(
+                player, "music", player_stack_depth, nullptr, tskIDLE_PRIORITY + 1,
+                player_stack, &player_task_buffer
+            );
         }
         const bool result = player_task != nullptr;
         bsp_sys_exit_critical(state);
-        if (created) internal::register_terminal_command();
         return result;
     }
 

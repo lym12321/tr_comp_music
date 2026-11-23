@@ -11,6 +11,8 @@ namespace music {
     };
 
     bool init();
+    // Register once after terminal::init() when the application enables the console.
+    void register_terminal_commands();
 
     // Both playback APIs require tones with static storage duration.
     bool play(std::span<const tone_t> tones, float duty_cycle = 0.2f);
